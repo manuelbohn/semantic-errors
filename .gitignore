@@ -1,3 +1,9 @@
+
+./scripts/data_processing.Rmd
+./data/orev_tango.csv
+.DS_Store
+
+
 # History files
 .Rhistory
 .Rapp.history

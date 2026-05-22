@@ -1,0 +1,99 @@
+---
+title: "vocab predict"
+output: html_document
+date: "2026-05-06"
+---
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggthemes)
+library(brms)
+```
+
+```{r}
+
+dt2 <- read_csv("../../QuantEx/vocab/data/orev_t2_data.csv")
+
+dt1 <- read_csv("../../QuantEx/orev/data/clean_data.csv")
+
+prag_data <- read_csv("../../PraBat/prabat-analysis/data/orev_data.csv")
+
+odat <- read_csv("../data/orev_tango.csv")
+
+```
+
+Systematic errors reveal conceptual knowledge and predict word learning one year later
+
+# choice
+
+```{r}
+d_cross <- bind_rows(
+  dt1%>%select(subjID, age,sex, targetWord,german, chosenCategory, correct)%>%filter(targetWord %in% readRDS("../../QuantEx/vocab/saves/selected_items_rasch.rds"))%>%select(-targetWord)%>%rename(targetWord = german)%>%mutate(word_class = "noun", targetWord = ifelse(targetWord == "möhre", "moehre", targetWord), site = "lpz"),
+  #dt2%>%select(subjID, targetWord, chosenCategory),
+  
+  odat%>%group_by(id)%>% mutate(test_day = as.numeric(factor(tdate)), correct = as.numeric(correct),sex = ifelse(Gender == "Männlich", "m", "f"))%>% filter(test_day %in%c(1))%>%rename(subjID = id, chosenCategory = chosen_category, targetWord = target_word)%>%select(subjID, age, sex,targetWord, chosenCategory, word_class, correct)%>%mutate(site = "lg"),
+
+  prag_data%>%mutate(correct = as.numeric(correct))%>%rename(subjID = id, chosenCategory = chosen_category, targetWord = target_word)%>%select(subjID, age, sex,targetWord, chosenCategory, word_class, correct)%>%mutate(site = "lpz", sex = ifelse(sex == "w", "f", "m"))
+  
+  )%>%
+  filter(age > 2.99, 
+         age < 8)%>%
+  mutate(dist = ifelse(chosenCategory == "dist1", "semantic", "other"), 
+         sem_dist = ifelse(dist == "semantic", 1, 0), 
+         age_group = as.character(substr(age,1,1)),
+         subjID = paste0("id",as.character(sprintf("%04d",as.numeric(factor(subjID))))))
+  
+
+
+
+write_csv(d_cross, "../data/data_cross.csv")
+
+```
+
+```{r}
+pred_data <- dt1%>%
+  filter(chosenCategory != "target")%>%
+  left_join(dt2%>%select(subjID, targetWord, correct)%>%rename(t2_correct = correct))%>%
+  filter(!is.na(t2_correct))%>%
+  mutate(dist = ifelse(chosenCategory == "dist1", "semantic", "other"))%>%
+  select(-targetWord)%>%rename(targetWord = german)
+
+d_long <- bind_rows(
+
+  pred_data%>%select(subjID, targetWord, age, sex, dist, t2_correct)%>%mutate(site = "lpz"),
+  
+  odat%>%
+  group_by(id)%>%
+  mutate(test_day = as.numeric(factor(tdate)),sex = ifelse(Gender == "Männlich", "m", "f"))%>%
+  filter(test_day == 1, word_class == "noun", chosen_category != "target")%>%
+  left_join(
+    odat%>%
+      group_by(id)%>%
+      mutate(test_day = as.numeric(factor(tdate)))%>%
+      filter(test_day == 4)%>%
+      select(id, target_word, correct)%>%
+      rename(t2_correct = correct)
+  )%>%
+  filter(!is.na(t2_correct))%>%
+  mutate(t2_correct = as.numeric(t2_correct),
+         dist = ifelse(chosen_category == "dist1", "semantic", "other")
+         )%>%
+  select(id, target_word, age,sex, dist, t2_correct)%>%
+  rename(subjID = id, 
+         targetWord = target_word)%>%
+    mutate(site = "lg")
+)%>%
+  ungroup()%>%
+  mutate(subjID = paste0("id",as.character(sprintf("%04d",as.numeric(factor(subjID))))))
+
+write_csv(d_long, "../data/data_long.csv")
+```
+
+```{r}
+library(rlevante)
+
+get_trials("pilot-mpieva-de-main")
+
+```
+

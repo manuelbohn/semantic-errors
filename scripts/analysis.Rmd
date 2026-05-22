@@ -1,0 +1,239 @@
+---
+title: "vocab predict"
+output: html_document
+date: "2026-05-06"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggthemes)
+library(brms)
+library(cowplot)
+```
+
+```{r}
+d_cross <- read_csv("../data/data_cross.csv")
+d_long <- read_csv("../data/data_long.csv")
+```
+
+# Proportion of semantic errors across development
+
+```{r}
+md1 <- d_cross%>%
+  filter(chosenCategory != "target")%>%
+  mutate(z_age = scale(age))
+
+dp1 <- md1%>%
+  group_by(subjID, age, word_class)%>%
+  mutate(n = n())%>%
+  group_by(subjID, age, word_class, dist, n)%>%
+  summarise(n_cat = n())%>%
+  ungroup()%>%
+  mutate(prop = n_cat/n)%>%
+  filter(dist == "semantic")
+```
+
+## Age binned
+
+```{r}
+bm1 <- brm(sem_dist ~ age_group + word_class + (1|subjID) + (age_group|targetWord), 
+    data = md1,
+    chains = 4, 
+    cores = 4,
+    iter = 3000,
+    warmup = 1000,
+    threads = threading(2),
+    family = bernoulli(),
+    )
+```
+
+```{r}
+ndata1 <- md1%>%
+  distinct(age_group, word_class)
+
+post1 <- fitted(bm1, newdata = ndata1, re_formula = NA)%>%
+  as_tibble() %>%
+  bind_cols(ndata1)%>%
+  mutate(age = as.numeric(age_group)+0.5)
+```
+
+## Age continous
+
+```{r}
+bm1_1 <- brm(sem_dist ~ z_age + word_class + (1|subjID) + (z_age|targetWord), 
+    data = md1,
+    chains = 4, 
+    cores = 4,
+    iter = 3000,
+    warmup = 1000,
+    threads = threading(2),
+    family = bernoulli(),
+    )
+```
+
+```{r}
+fixef(bm1_1)%>%as_tibble(rownames = "param")%>%saveRDS("../saves/cross_age.rds")
+```
+
+```{r}
+ndata1_1 <- md1%>%
+  distinct(z_age, age, word_class)
+
+post1_1 <- fitted(bm1_1, newdata = ndata1_1, re_formula = NA)%>%
+  as_tibble() %>%
+  bind_cols(ndata1_1)
+```
+
+## Combined plot
+
+```{r}
+p1 <- ggplot()+
+  geom_point(data = dp1, aes(x = age, y = prop, size = n, col = word_class), alpha = 0.05)+
+  geom_hline(yintercept = 1/3, lty = 2, alpha = 0.75, linewidth = 0.5)+
+  geom_smooth(data = post1_1, aes(x = age, y = Estimate, ymin = Q2.5, ymax = Q97.5, col = word_class), stat = "identity", alpha = .25)+
+  geom_pointrange(data= post1, aes(x = age, y = Estimate, ymin = Q2.5, ymax = Q97.5, col = word_class), position = position_dodge(width = 0.25), alpha = 0.5)+
+  theme_bw()+
+  scale_size(name = "Data points\nper child")+
+  scale_color_manual(name = "Word class", labels = c("Noun", "Verb"), values = c("#117733", "#999933"))+
+  ylim(0,1)+
+  labs(x = "Age in years", y="Probability of choosing semantic distractor")+
+  theme(
+    #legend.position = c(0.8, 0.15), 
+    #legend.background = element_rect(colour = "black", size = 0.5, linetype = "solid")
+    )
+```
+
+# Predicting overall performance by proportion os semantic errors
+
+```{r}
+md2 <- d_cross%>%
+  mutate(z_age = scale(age))%>%
+  group_by(subjID, age, z_age)%>%
+  summarise(n = n(),
+            sum = sum(correct),
+            errors = sum(correct == 0),
+            prop_sem_errors = sum(sem_dist)/errors)%>%
+  filter(errors > 0,)%>%
+  ungroup()%>%
+  mutate(z_prop_sem_errors = scale(prop_sem_errors))
+
+
+pd2 <- md2%>%
+  mutate(prop = sum/n)
+```
+
+```{r}
+bm2 <- brm(sum |trials(n) ~ z_age * z_prop_sem_errors, 
+    data = md2,
+    chains = 4, 
+    cores = 4,
+    iter = 3000,
+    warmup = 1000,
+    threads = threading(2),
+    family = binomial(),
+    )%>%add_criterion("loo")
+```
+
+```{r}
+fixef(bm2)%>%as_tibble(rownames = "param")%>%saveRDS("../saves/cross_pred.rds")
+```
+
+
+```{r}
+ndata2 <- md2%>%
+  distinct(z_age, age)%>%
+  mutate(n = 1)%>%
+  expand_grid(z_prop_sem_errors = c(-1,0,1))%>%
+  mutate(prop_sem_errors =  z_prop_sem_errors*sd(md2$prop_sem_errors)+mean(md2$prop_sem_errors))
+
+post2 <- fitted(bm2, newdata = ndata2, re_formula = NA)%>%
+  as_tibble() %>%
+  bind_cols(ndata2)
+```
+
+```{r}
+p2 <- ggplot()+
+  geom_hline(yintercept = 1/4, lty = 2, alpha = 0.75, linewidth = 0.5)+
+  geom_point(data = pd2, aes(x = age, y = prop, col = prop_sem_errors, size = errors), alpha = 0.05)+
+  geom_smooth(data = post2, aes(x = age, y = Estimate, ymin = Q2.5, ymax = Q97.5, col = prop_sem_errors, group = factor(prop_sem_errors)), stat = "identity", alpha = .25)+
+  theme_bw()+
+  scale_color_viridis_c(name = "Proportion\nsem. errors", breaks = c(0,0.2343251, 0.4773122, 0.7202994,1), labels = c(0,"-1 SD","avg.", "+1 SD",1))+
+  scale_fill_distiller(name = "Proportion\nsem. errors", labels = c("high (+1 SD)", "medium", "low (-1 SD)"))+
+  ylim(0,1)+
+  scale_size(name = "Data points\nper child")+
+  labs(x = "Age in years", y="Probability of choosing correct word")+
+  theme(
+    #legend.position = c(0.5, 0.15), 
+    #legend.direction  = "horizontal",
+    #legend.title.position = "top",
+    #legend.key.height  = unit(2, "lines"),
+    #legend.title = element_text(hjust = 0.5),
+    #legend.background = element_rect(colour = "black", size = 0.5, linetype = "solid")
+    )
+```
+
+# Predicting learning one year later based on semantic error
+
+```{r}
+md3 <- d_long%>%
+  mutate(z_age = scale(age))
+
+dp3 <- md3%>%
+  group_by(subjID, age, dist)%>%
+  summarise(prop = mean(t2_correct), 
+            n = n())
+```
+
+```{r}
+bm3 <- brm(t2_correct~ z_age * dist + (dist|subjID) + (z_age|targetWord), 
+    data = md3,
+    chains = 4, 
+    cores = 4,
+    iter = 4000,
+    threads = threading(2),
+    family = bernoulli(),
+    )
+```
+
+```{r}
+fixef(bm3)%>%as_tibble(rownames = "param")%>%saveRDS("../saves/long_pred.rds")
+```
+
+```{r}
+ndata3 <- md3%>%
+  distinct(z_age, age)%>%
+  expand_grid(
+    dist = factor(c("semantic", "other"), levels = c("semantic", "other")))
+
+
+post3 <- fitted(bm3, newdata = ndata3, re_formula = NA)%>%
+  as_tibble() %>%
+  bind_cols(ndata3)
+```
+
+```{r}
+p3 <- ggplot()+
+  geom_hline(yintercept = 1/4, lty = 2, alpha = 0.75, linewidth = 0.5)+
+  geom_point(data = dp3, aes(x = age, y = prop, col = dist, size = n), alpha = 0.05)+
+  geom_smooth(data = post3, aes(x = age, y = Estimate, ymin = Q2.5, ymax = Q97.5, col = dist), stat = "identity", alpha = .25)+
+  theme_bw()+
+  scale_color_colorblind(name = "Distractor chosen\none year earlier", labels = c("Semantic", "Other"))+
+  scale_fill_colorblind(name = "Distractor chosen\none year earlier", labels = c("Semantic", "Other"))+
+  ylim(0,1)+
+  scale_size(name = "Data points\nper child")+
+  labs(x = "Age in years", y="Probability of chosing correct word")+
+  theme(
+    #legend.position = c(0.8, 0.15), 
+    #legend.background = element_rect(colour = "black", size = 0.5, linetype = "solid")
+    )
+```
+
+# Figure 1 in manuscript
+
+```{r}
+plot_grid(p1, p2, p3, nrow = 1, labels = c("A", "B", "C"))
+```
+```{r}
+ggsave("../figures/fig1.png", width = 14, height = 4, scale = 1.1)
+```
+
